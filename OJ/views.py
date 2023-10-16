@@ -4,11 +4,11 @@ List of Views:
 - PROBLEM PAGE: Has the list of problems with sorting & paginations.
 - DEESCRIPTION PAGE: Shows problem description of left side and has a text editor on roght side with code submit buttton.
 '''
-import traceback
+
 from django.shortcuts import render, get_object_or_404
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
-from django.views.decorators.csrf import csrf_protect
+
 
 from USERS.models import User, Submission
 from OJ.models import Problem, TestCase
@@ -102,136 +102,144 @@ def descriptionPage(request, problem_id):
 
 ###############################################################################################################################
 
-
-
-
-def compile_code(container_name, compile_command):
-    # Run the compilation command inside the Docker container
-    result = subprocess.run(f"docker exec {container_name} {compile_command}", capture_output=True, shell=True)
-    return result.returncode == 0, result.stderr.decode("utf-8")
-
-
-def run_code(container_name, execution_command, input_data, timeout):
-    # Run the user code with the provided input inside the Docker container
-    try:
-        result = subprocess.run(
-            f"docker exec {container_name} sh -c 'echo \"{input_data}\" | {execution_command}'",
-            capture_output=True,
-            timeout=timeout,
-            shell=True,
-            text=True
-        )
-        return True, result.stdout.strip(), None
-    except subprocess.TimeoutExpired:
-        return False, None, "Time Limit Exceeded"
-    except Exception as e:
-        traceback.print_exc()
-        return False, None, "Runtime Error"
-
-
 @login_required(login_url='login')
 def verdictPage(request, problem_id):
     if request.method == 'POST':
-        # Setting docker-client
+        # setting docker-client
         docker_client = docker.from_env()
         Running = "running"
 
-        problem = get_object_or_404(Problem, id=problem_id)
-        testcase = get_object_or_404(TestCase, problem_id=problem_id)
-        testcase.output = testcase.output.replace('\r\n', '\n').strip()  # Replace line endings for comparison
+        problem = Problem.objects.get(id=problem_id)
+        testcase = TestCase.objects.get(problem_id=problem_id)
+        #replacing \r\n by \n in original output to compare it with the usercode output
+        testcase.output = testcase.output.replace('\r\n','\n').strip() 
 
-        # Score of a problem
-        if problem.difficulty == "Easy":
+        # score of a problem
+        if problem.difficulty=="Easy":
             score = 10
-        elif problem.difficulty == "Medium":
+        elif problem.difficulty=="Medium":
             score = 30
         else:
             score = 50
 
-        # Default verdict is "Wrong Answer"
-        verdict = "Wrong Answer"
+
+        #setting verdict to wrong by default
+        verdict = "Wrong Answer" 
+        res = ""
         run_time = 0
 
-        # Extract data from the form
+        # extract data from form
         form = CodeForm(request.POST)
         user_code = ''
         if form.is_valid():
             user_code = form.cleaned_data.get('user_code')
-            user_code = user_code.replace('\r\n', '\n').strip()
-
+            user_code = user_code.replace('\r\n','\n').strip()
+            
         language = request.POST['language']
-        submission = Submission(
-            user=request.user,
-            problem=problem,
-            submission_time=datetime.now(),
-            language=language,
-            user_code=user_code
-        )
+        submission = Submission(user=request.user, problem=problem, submission_time=datetime.now(), 
+                                    language=language, user_code=user_code)
         submission.save()
 
         filename = str(submission.id)
 
-        # Language-specific configurations
+        # if user code is in C++
         if language == "C++":
             extension = ".cpp"
-            container_name = "oj-cpp"
-            compile_command = f"g++ -o {filename} {filename}.cpp"
-            execution_command = f"./{filename}"
+            cont_name = "oj-cpp"
+            compile = f"g++ -o {filename} {filename}.cpp"
+            clean = f"{filename} {filename}.cpp"
             docker_img = "gcc:11.2.0"
+            exe = f"./{filename}"
 
         elif language == "Python3":
             extension = ".py"
-            container_name = "oj-py3"
-            compile_command = "echo ''"  # No need to compile Python code
-            execution_command = f"python {filename}.py"
+            cont_name = "oj-py3"
+            compile = "python3"
+            clean = f"{filename}.py"
             docker_img = "python3"
+            exe = f"python {filename}.py"
 
-        # File and Docker container configurations
+
         file = filename + extension
-        filepath = os.path.join(settings.FILES_DIR, file)
+        filepath = settings.FILES_DIR + "/" + file
+        code = open(filepath,"w")
+        code.write(user_code)
+        code.close()
 
-        # Write the user code to the file
-        with open(filepath, "w") as code:
-            code.write(user_code)
-
-        # Check if the Docker container is running, start if not found
+        # checking if the docker container is running or not
         try:
-            container = docker_client.containers.get(container_name)
+            container = docker_client.containers.get(cont_name)
             container_state = container.attrs['State']
-            container_is_running = container_state['Status'] == Running
+            container_is_running = (container_state['Status'] == Running)
             if not container_is_running:
-                subprocess.run(f"docker start {container_name}", shell=True)
+                subprocess.run(f"docker start {cont_name}",shell=True)
         except docker.errors.NotFound:
-            subprocess.run(f"docker run -dt --name {container_name} {docker_img}", shell=True)
+            subprocess.run(f"docker run -dt --name {cont_name} {docker_img}",shell=True)
 
-        # Copy the file to the Docker container
-        subprocess.run(f"docker cp {filepath} {container_name}:/{file}", shell=True)
 
-        # Compile the code
-        compiled_successfully, compile_error_msg = compile_code(container_name, compile_command)
-        if not compiled_successfully:
+        # copy/paste the .cpp file in docker container 
+        subprocess.run(f"docker cp {filepath} {cont_name}:/{file}",shell=True)
+
+        # compiling the code
+        cmp = subprocess.run(f"docker exec {cont_name} {compile}", capture_output=True, shell=True)
+        if cmp.returncode != 0:
             verdict = "Compilation Error"
+            subprocess.run(f"docker exec {cont_name} rm {file}",shell=True)
 
         else:
-            # Run the code on the given input and take the output
-            start_time = time()
-            execution_successful, user_stdout, run_error_msg = run_code(container_name, execution_command,
-                                                                        testcase.input, problem.time_limit)
-            run_time = time() - start_time
+            # running the code on given input and taking the output in a variable in bytes
+            start = time()
+            try:
+                res = subprocess.run(f"docker exec {cont_name} sh -c 'echo \"{testcase.input}\" | {exe}'",
+                                                capture_output=True, timeout=problem.time_limit, shell=True)
+                run_time = time()-start
+                subprocess.run(f"docker exec {cont_name} rm {clean}",shell=True)
+            except subprocess.TimeoutExpired:
+                run_time = time()-start
+                verdict = "Time Limit Exceeded"
+                subprocess.run(f"docker container kill {cont_name}", shell=True)
+                subprocess.run(f"docker start {cont_name}",shell=True)
+                subprocess.run(f"docker exec {cont_name} rm {clean}",shell=True)
 
-            # Remove the compiled binary or Python script from the container
-            subprocess.run(f"docker exec {container_name} rm {file}", shell=True)
 
-            if not execution_successful:
-                verdict = run_error_msg
+            if verdict != "Time Limit Exceeded" and res.returncode != 0:
+                verdict = "Runtime Error"
+                
 
-            elif user_stdout.strip() == testcase.output.strip():
+        user_stderr = ""
+        user_stdout = ""
+        if verdict == "Compilation Error":
+            user_stderr = cmp.stderr.decode('utf-8')
+        
+        elif verdict == "Wrong Answer":
+            user_stdout = res.stdout.decode('utf-8')
+            if str(user_stdout)==str(testcase.output):
+                verdict = "Accepted"
+            testcase.output += '\n' # added extra line to compare user output having extra ling at the end of their output
+            if str(user_stdout)==str(testcase.output):
                 verdict = "Accepted"
 
-        # Clean up the file after running
+
+        # creating Solution class objects and showing it on leaderboard
+        user = User.objects.get(username=request.user)
+        previous_verdict = Submission.objects.filter(user=user.id, problem=problem, verdict="Accepted")
+        if len(previous_verdict)==0 and verdict=="Accepted":
+            user.total_score += score
+            user.total_solve_count += 1
+            if problem.difficulty == "Easy":
+                user.easy_solve_count += 1
+            elif problem.difficulty == "Medium":
+                user.medium_solve_count += 1
+            else:
+                user.tough_solve_count += 1
+            user.save()
+
+        submission.verdict = verdict
+        submission.user_stdout = user_stdout
+        submission.user_stderr = user_stderr
+        submission.run_time = run_time
+        submission.save()
         os.remove(filepath)
-
-        # Handling leaderboard and other score-related operations (as before)
-
-        context = {'verdict': verdict}
+        context={'verdict':verdict}
         return render(request, 'verdict.html', context)
+    

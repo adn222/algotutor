@@ -14,8 +14,8 @@ class CreateUserForm(UserCreationForm):
         fields = ['username', 'first_name', 'last_name',
                   'email', 'password1', 'password2']
 
-#class UpdateProfileForm(ModelForm):
-  #  class Meta:
-   #    fields = ['full_name', 'profile_pic']
+class UpdateProfileForm(ModelForm):
+    class Meta:
+       fields = ['full_name', 'profile_pic']
 
    

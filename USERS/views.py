@@ -11,12 +11,12 @@ List of Views:
 
 from django.shortcuts import render, get_object_or_404, redirect
 from django.core.mail import EmailMessage
-from django.utils.http import urlsafe_base64_encode,urlsafe_base64_decode
+
 from django.conf import settings
 from django.contrib.auth import authenticate, login, logout
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
-from django.core.files.storage import FileSystemStorage
+
 from django.views.decorators.csrf import csrf_protect
 from django.contrib.sites.shortcuts import get_current_site
 from django.template.loader import render_to_string
@@ -123,9 +123,6 @@ def logoutPage(request):
 def allSubmissionPage(request):
     submissions = Submission.objects.filter(user=request.user.id)
     return render(request, 'submission.html', {'submissions': submissions})
-
-
-   
 
 
 
